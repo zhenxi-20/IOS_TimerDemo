@@ -1,0 +1,184 @@
+#import "Timer.h"
+#import "sqlite3.h"
+
+#define DBFILE_NAME @"TimerTable.sqlite3"
+
+@interface TimerDAO : NSObject
+{
+	sqlite3 *db;
+}
+
++ (instanceType *)sharedManager;
+- (NSString *)applicationDocumentsDirectoryFile;
+- (void)createEditableCopyOfDatabaseIfNeeded;
+
+- (int) createLogTime:(NSString *)logDate;
+- (NSMutableArray) findTime:(NSString *)logDate;
+- (int) removeLogTime:(NSString *)logDate;
+
+@end
+
+//------------------------
+
+#import "TimerDAO.h"
+
+@implementation TimerDAO()
+
+#define TIMER_TABLE_FILE @"TimerTable.sqlite"
+
++ (instanceType *)sharedManager
+{
+	static dispatch_once_t once;
+	dispatch_once(&once, ^{
+		sharedManager = [[self alloc] init];
+		[sharedManager createEditableCopyOfDatabaseIfNeeded];
+	});
+	
+	return sharedManager;
+}
+
+-(void)createEditableCopyOfDatabaseIfNeeded
+{
+	/*plist method
+	NSFileManager *fileManager = [NSFileManager defaultManager];
+	NSString *writableDBPath = [self applicationDocumentsDirectoryFile];
+	
+	if (![fileManager fileExistsAtPath:writableDBPath]){
+		NSString *defaultDBPath = [[[NSBundle MainBundle] resourcePath] stringByAppendingPathComponent: TIMER_TABLE_FILE ];
+		
+		NSError *error;
+		BOOL copySuc = [fileManager copyItemAtPath:defaultDBPath toPath:writableDBPath error:&error];
+		if(!copySuc) NSAssert1(0,@"Create DB File Failed. Info:'%@'.", [error localizedDescription]);
+	}*/
+	
+	// sqlite3 method
+	NSString *writableDBPath = [self applicationDocumentsDirectoryFile];
+	
+	if(sqlite3_open([writableDBPath UTF8String], &db) !=SQLITE_OK){
+		sqlite_close(db);
+		NSAssert(NO,@"Open DB Failed");
+	}else{
+		char *err;
+		NSString *tableSQL = [[NSString alloc] initWithString:@"CREATE TABLE IF NOT EXISTS TimerSummaryLog (cdate TEXT PRIMARY KEY);"];
+		if(sqlite3_exec(db, [tableSQL UTF8String], NULL, NULL, &err ) != SQLITE_OK){
+			sqlite_close(db);
+			NSAssert(NO,@"Create Table Failed: '%@'", err);
+		}
+		sqlite_close(db);
+	}
+}
+
+- (NSString *)applicationDocumentsDirectoryFile
+{
+	NSString *documentDir = [NSSearchPathForDirectoriesInDomain(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
+	NSString *filePath = [documentDir stringByAppendingPathComponent: TIMER_TABLE_FILE];
+	return filePath;
+}
+
+- (int) createLogTime:(NSString *)logDate
+{
+	NSString *path = [self applicationDocumentsDirectoryFile];
+	
+	if(sqlite3_open([path UTF8String], &db) !=SQLITE_OK){
+		sqlite_close(db);
+		NSAssert(NO,@"Open DB Failed");
+	}else{
+		NSString *insSQL = @"INSERT OR REPLACE INTO TimerSummaryLog VALUES(?)";
+		
+		sqlite3_stmt *statement;
+		//预处理过程：将SQL编译成二进制代码，提高SQL执行速度
+		if(sqlite3_prepare_v2(db, [insSQL UTF8String], -1, &statement, NULL) == SQLITE_OK){
+			//绑定参数
+			sqlite3_bind_text(statement, 1, [logDate UTF8String], -1, NULL);
+		
+			if(sqlite3_step(statement) != SQLITE_DONE)	NSAssert(NO,@"Insert Failed");
+		}
+		sqlite3_finalize(statement);
+		sqlite3_close(db);
+	}
+	
+	return 0;
+}
+
+- (int) removeLogTime:(NSString *)logDate
+{
+	NSString *path = [self applicationDocumentsDirectoryFile];
+	
+	if(sqlite3_open([path UTF8String], &db) !=SQLITE_OK){
+		sqlite_close(db);
+		NSAssert(NO,@"Open DB Failed");
+	}else{
+		NSString *delSQL = @"DELETE FROM TimerSummaryLog  WHERE cdate = ?";
+		
+		sqlite3_stmt *statement;
+		//预处理过程：将SQL编译成二进制代码，提高SQL执行速度
+		if(sqlite3_prepare_v2(db, [delSQL UTF8String], -1, &statement, NULL) == SQLITE_OK){
+			//绑定参数
+			sqlite3_bind_text(statement, 1, [logDate UTF8String], -1, NULL);
+		
+			if(sqlite3_step(statement) != SQLITE_DONE)	NSAssert(NO,@"Delete Failed");
+		}
+		sqlite3_finalize(statement);
+		sqlite3_close(db);
+	}
+	
+	return 0;
+}
+
+- (NSMutableArray *) loadLogTime:(NSDate *)logDate
+{
+	NSMutableArray *logTimeArray = [NSMutableArray arrayWithCapacity:15];
+	//Get 3 days's dates
+	NSDateFormatter *dateFormat = [[NSDateFormatter alloc] init];
+	[dateFormat setDateFormat:@"yyyy-MM-dd HH:mm:ss"];
+	
+	NSDate *today_1 = [NSDate dateWithTimeInterval:-(24*60*60) sinceDate:logDate];
+	NSDate *today_2 = [NSDate dateWithTimeInterval:-(2*24*60*60) sinceDate:logDate];
+	
+	
+	NSMutableArray *threeDays = @[[dateFormat stringFromDate:logDate],
+								  [dateFormat stringFromDate:today_1],
+								  [dateFormat stringFromDate:today_2],nil];
+	
+	for (NSString *day in threeDays){
+		[logTimeArray addObjectsFromArray:[self findTime:day]];
+	}
+	
+	return logTimeArray;
+}
+
+- (NSMutableArray) findTime:(NSString *)logDate
+{
+	NSMutableArray *logTime = [NSMutableArray arrayWithCapacity:5];
+	
+	NSString *path = [self applicationDocumentsDirectoryFile];
+	
+	if(sqlite3_open([path UTF8String], &db) !=SQLITE_OK){
+		sqlite_close(db);
+		NSAssert(NO,@"Open DB Failed");
+	}else{
+		NSString *selSQL = @"SELECT TOP 5 cdate FROM TimerSummaryLog WHERE cdate LIKE ?";
+		
+		sqlite3_stmt *statement;
+		//预处理过程：将SQL编译成二进制代码，提高SQL执行速度
+		if(sqlite3_prepare_v2(db, [selSQL UTF8String], -1, &statement, NULL) == SQLITE_OK){
+			//绑定参数
+			NSString *ymd = [logDate substringToIndex:10];
+			sqlite3_bind_text(statement, 1, [ymd UTF8String], -1, NULL);
+		
+			//执行
+			while(sqlite3_step(statement) == SQLITE_ROW){
+				char *cdate = (char *)sqlite3_column_text(statement, 0);
+				NSString *nscdate = [[NSString alloc] initWithUTF8String:cdate];
+				[logTime addObject:nscdate];
+			}
+		}
+		
+		sqlite3_finalize(statement);
+		sqlite3_close(db);
+	}
+	
+	return logTime;
+}
+
+@end
